@@ -1,0 +1,1 @@
+C:\Users\Kiro\Documents\personal\proyecto\musica\musicore\rust-core\target\armv7-linux-androideabi\release\libmusicore.so: C:\Users\Kiro\Documents\personal\proyecto\musica\musicore\rust-core\src\lib.rs

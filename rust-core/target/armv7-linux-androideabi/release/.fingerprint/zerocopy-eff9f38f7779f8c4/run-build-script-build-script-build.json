@@ -1,0 +1,1 @@
+{"rustc":222933465615791797,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[4321869508056025743,"build_script_build",false,9506280996637677863]],"local":[{"RerunIfChanged":{"output":"armv7-linux-androideabi\\release\\build\\zerocopy-eff9f38f7779f8c4\\output","paths":["build.rs","Cargo.toml"]}}],"rustflags":[],"config":0,"compile_kind":0}
