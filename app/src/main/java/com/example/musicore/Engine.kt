@@ -1,6 +1,7 @@
 package com.example.musicore
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.media3.common.AudioAttributes
@@ -53,8 +54,11 @@ class QueuePlayer(p: Player) : ForwardingPlayer(p) {
     override fun getShuffleModeEnabled() = false
     override fun isCommandAvailable(command: Int) = availableCommands.contains(command)
     override fun play() {
-        // Con la canción terminada, un "play" externo (auriculares, coche…) debe avanzar, no repetirla
-        if (playbackState == Player.STATE_ENDED) Engine.next() else super.play()
+        when (playbackState) {
+            Player.STATE_ENDED -> Engine.next()          // terminada: un "play" externo avanza, no repite
+            Player.STATE_IDLE -> Engine.reloadCurrent()  // parado tras un fallo: vuelve a cargar la canción
+            else -> super.play()
+        }
     }
     override fun hasNextMediaItem() = true
     override fun hasPreviousMediaItem() = true
@@ -70,6 +74,7 @@ object Engine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     lateinit var player: Player; private set
     private var ready = false
+    private var errors = 0   // fallos de reproducción seguidos
 
     val current = MutableStateFlow<Song?>(null)
     val playing = MutableStateFlow(false)
@@ -79,6 +84,8 @@ object Engine {
     val version = MutableStateFlow(0)     // sube con cada cambio de canción/cola
     val playlists = MutableStateFlow<List<PlaylistInfo>>(emptyList())
     val activePlaylist = MutableStateFlow<Long?>(null)
+    /** Último fallo de reproducción (se muestra en el reproductor para poder diagnosticarlo). */
+    val playbackError = MutableStateFlow<String?>(null)
 
     fun init(ctx: Context) {
         if (ready) return
@@ -105,8 +112,19 @@ object Engine {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) next() else tick()
             }
-            override fun onIsPlayingChanged(isPlaying: Boolean) { playing.value = isPlaying; if (!isPlaying) savePosition() }
-            override fun onPlayerError(error: PlaybackException) { next() } // archivo ilegible → salta
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playing.value = isPlaying
+                if (isPlaying) { errors = 0; playbackError.value = null } else savePosition()
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                playbackError.value = "${error.errorCodeName}: ${error.cause?.message ?: error.message ?: ""}".trim()
+                errors++
+                when {
+                    errors == 1 -> reloadCurrent()  // primer fallo: reintenta la misma canción donde iba
+                    errors <= 3 -> next()           // sigue fallando (archivo ilegible): salta a la siguiente
+                    else -> exo.stop()              // demasiados seguidos: se para en vez de encadenar saltos
+                }
+            }
         })
         player = QueuePlayer(exo)
 
@@ -169,12 +187,14 @@ object Engine {
 
     /** Crea una cola aleatoria nueva con toda la lista y empieza por la primera. */
     fun startPlaylist(id: Long) {
+        ensureService()
         activePlaylist.value = id
         play(song(RustCore.call("start", JSONObject().put("id", id))))
     }
 
     /** Reproduce una canción concreta de la lista y continúa la cola desde ahí. */
     fun playSong(playlistId: Long, songId: String) {
+        ensureService()
         activePlaylist.value = playlistId
         play(song(RustCore.call("play_song", JSONObject().put("id", playlistId).put("song_id", songId))))
     }
@@ -197,7 +217,25 @@ object Engine {
     // ---------- control
     fun next() { runCatching { play(song(RustCore.call("next"))) } }
     fun prev() { runCatching { play(song(RustCore.call("prev"))) } }
-    fun toggle() { if (exo.isPlaying) exo.pause() else if (exo.playbackState == Player.STATE_ENDED) next() else exo.play() }
+    fun toggle() {
+        ensureService()
+        when {
+            exo.isPlaying -> exo.pause()
+            exo.playbackState == Player.STATE_ENDED -> next()
+            exo.playbackState == Player.STATE_IDLE -> { errors = 0; reloadCurrent() } // tras un fallo: recarga la canción
+            else -> exo.play()
+        }
+    }
+
+    /** Vuelve a cargar la canción actual por donde iba (el reproductor se quedó parado tras un fallo). */
+    fun reloadCurrent() {
+        current.value?.let { play(it, autoplay = true, startMs = position.value) }
+    }
+
+    /** Si Android paró el servicio (notificación y controles externos), lo vuelve a arrancar. */
+    private fun ensureService() {
+        runCatching { app.startService(Intent(app, PlaybackService::class.java)) }
+    }
     fun seekTo(ms: Long) { exo.seekTo(ms); tick(); current.value?.let { persist(it.id, ms) } }
 
     fun setVolume(v: Float) {

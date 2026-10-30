@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -55,6 +56,12 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { App() }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Si Android paró el servicio mientras la app estaba en segundo plano, se vuelve a arrancar
+        runCatching { startService(Intent(this, PlaybackService::class.java)) }
     }
 
     override fun onStop() {
@@ -205,7 +212,7 @@ fun Detail(id: Long, onBack: () -> Unit) {
                     if (matches.isEmpty()) item {
                         Text("Ninguna canción coincide", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    items(matches.size, key = { matches[it] }) { k -> QueueRow(id, matches[k], info) }
+                    items(matches.size, key = { matches[it] }, contentType = { "song" }) { k -> QueueRow(id, matches[k], info) }
                 } else {
                     item {
                         Button(onClick = { Engine.startPlaylist(id) }, modifier = Modifier.fillMaxWidth()) {
@@ -222,7 +229,7 @@ fun Detail(id: Long, onBack: () -> Unit) {
                             else SectionTitle("Canciones", "${info.len}")
                         }
                     }
-                    items(info.len, key = { it }) { i -> QueueRow(id, i, info) }
+                    items(info.len, key = { it }, contentType = { "song" }) { i -> QueueRow(id, i, info) }
                 }
             }
         }
@@ -266,9 +273,10 @@ private fun SongRow(song: Song, state: RowState, onClick: () -> Unit) {
         Text(mark, color = if (isCur) cs.primary else fg, modifier = Modifier.width(24.dp))
         if (isCur) AutoScrollText(song.title, Modifier.weight(1f), color = fg, fontWeight = FontWeight.Bold)
         else Text(song.title, Modifier.weight(1f), color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Box {
-            IconButton(onClick = { menu = true }, modifier = Modifier.size(44.dp)) { Text("⋮", color = fg, fontSize = 22.sp) }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+        Box(Modifier.size(44.dp).clip(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
+            Text("⋮", color = fg, fontSize = 22.sp)
+            // El menú solo existe mientras está abierto: así cada fila cuesta menos de pintar
+            if (menu) DropdownMenu(expanded = true, onDismissRequest = { menu = false }) {
                 // Aquí se pueden añadir más opciones en el futuro
                 DropdownMenuItem(text = { Text("Borrar canción") }, onClick = { menu = false; confirm = true })
             }
@@ -304,6 +312,7 @@ fun PlayerBar() {
     val vol by Engine.volume.collectAsState()
     val pos by Engine.position.collectAsState()
     val dur by Engine.duration.collectAsState()
+    val err by Engine.playbackError.collectAsState()
     var drag by remember { mutableStateOf<Float?>(null) }
     var confirm by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
@@ -319,6 +328,7 @@ fun PlayerBar() {
     ) {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
             AutoScrollText(song?.title ?: "", Modifier.fillMaxWidth(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            err?.let { Text("⚠ $it", color = cs.error, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }
 
             // Barra de progreso: tiempo actual · barra · duración total
             Row(verticalAlignment = Alignment.CenterVertically) {

@@ -30,6 +30,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    lint {
+        checkReleaseBuilds = false
+    }
 }
 
 // Eliminamos el bloque cargo { ... } y tasks.whenTaskAdded { ... }

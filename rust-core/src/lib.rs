@@ -183,6 +183,14 @@ struct Dirty {
     pos: bool,
 }
 
+/// Títulos ya normalizados (sin acentos ni mayúsculas) de una lista, para que buscar
+/// sea solo comparar texto. Se recalcula solo cuando cambia el contenido (`rev`).
+struct NormCache {
+    pl: u64,
+    rev: u64,
+    titles: Vec<String>,
+}
+
 #[derive(Default)]
 struct State {
     next_id: u64,
@@ -192,6 +200,7 @@ struct State {
     /// Sube cuando cambia el CONTENIDO de lo que se muestra (no la posición).
     /// Kotlin lo usa para saber cuándo volver a pedir las filas.
     rev: u64,
+    norm: Option<NormCache>,
 }
 
 impl State {
@@ -346,14 +355,20 @@ fn handle(st: &mut State, method: &str, a: Value) -> Result<Value, String> {
         }
 
         // search: solo los números de fila que coinciden (sin acentos ni mayúsculas).
+        // Los títulos normalizados se guardan en caché: cada pulsación solo compara texto.
         "search" => {
             let id = id.ok_or("falta id")?;
             let q = norm(a["q"].as_str().unwrap_or("").trim());
-            let pl = st.pl(id).ok_or("lista inexistente")?;
-            let hit = |i: usize| pl.songs.get(i).map_or(false, |s| norm(&s.title).contains(&q));
+            if st.norm.as_ref().map_or(true, |c| c.pl != id || c.rev != st.rev) {
+                let titles: Vec<String> =
+                    st.pl(id).ok_or("lista inexistente")?.songs.iter().map(|s| norm(&s.title)).collect();
+                st.norm = Some(NormCache { pl: id, rev: st.rev, titles });
+            }
+            let titles = &st.norm.as_ref().ok_or("sin caché")?.titles;
+            let hit = |i: usize| titles.get(i).map_or(false, |t| t.contains(&q));
             let rows: Vec<usize> = match st.session.as_ref().filter(|s| s.playlist_id == id) {
                 Some(s) => s.queue.iter().enumerate().filter(|&(_, &qi)| hit(qi as usize)).map(|(k, _)| k).collect(),
-                None => (0..pl.songs.len()).filter(|&i| hit(i)).collect(),
+                None => (0..titles.len()).filter(|&i| hit(i)).collect(),
             };
             Ok(json!(rows))
         }
@@ -830,6 +845,33 @@ mod tests {
         for r in hits.as_array().unwrap() {
             let s = handle(&mut st, "item_at", json!({"id": id, "index": r})).unwrap();
             assert!(s["title"].as_str().unwrap().contains("t1"));
+        }
+    }
+
+    #[test]
+    fn search_cache_follows_changes_and_is_fast() {
+        let (mut st, id) = mk(20_000);
+        handle(&mut st, "start", json!({"id": id})).unwrap();
+        let t0 = std::time::Instant::now();
+        let first = handle(&mut st, "search", json!({"id": id, "q": "t19"})).unwrap(); // calienta la caché
+        let cold = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        for q in ["t", "t1", "t12", "t123"] {
+            handle(&mut st, "search", json!({"id": id, "q": q})).unwrap();
+        }
+        let warm = t1.elapsed() / 4;
+        println!("búsqueda en 20.000 canciones (compilado en debug): primera {cold:?}, siguientes {warm:?}");
+        assert!(warm.as_millis() < 100, "búsqueda con caché demasiado lenta: {warm:?}");
+        // si se borra una canción, la caché no puede devolver filas viejas
+        let hit_row = first.as_array().unwrap()[0].as_u64().unwrap();
+        let victim = handle(&mut st, "item_at", json!({"id": id, "index": hit_row})).unwrap();
+        handle(&mut st, "remove_song", json!({"song_id": victim["id"]})).unwrap();
+        let after = handle(&mut st, "search", json!({"id": id, "q": "t19"})).unwrap();
+        assert_eq!(after.as_array().unwrap().len(), first.as_array().unwrap().len() - 1);
+        for r in after.as_array().unwrap() {
+            let s = handle(&mut st, "item_at", json!({"id": id, "index": r})).unwrap();
+            assert!(s["title"].as_str().unwrap().contains("t19"));
+            assert_ne!(s["id"], victim["id"]);
         }
     }
 
